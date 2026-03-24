@@ -2,12 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.example.geotrackerapp">
 
-    <!-- Location permissions -->
+    
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
     <uses-permission android:name="android.permission.ACCESS_BACKGROUND_LOCATION"/>
 
-    <!-- Notification permission for Android 13+ -->
+    
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
     <application
@@ -18,12 +18,12 @@
         android:supportsRtl="true"
         android:theme="@style/Theme.GeoTrackerApp">
 
-        <!-- Google Maps API key -->
+        
         <meta-data
             android:name="com.google.android.geo.API_KEY"
             android:value="AIzaSyAZM31hJE-pLaalKCwMRaE9dHI7cuTQIfU"/>
 
-        <!-- Main Activity -->
+        
         <activity
             android:name=".MapsActivity"
             android:exported="true">
@@ -33,13 +33,13 @@
             </intent-filter>
         </activity>
 
-        <!-- Saved Locations Activity -->
+        
         <activity
             android:name=".SavedLocationsActivity"
             android:exported="false"
             android:label="Saved Locations" />
 
-        <!-- Geofence Broadcast Receiver -->
+        
         <receiver
             android:name=".GeofenceBroadcastReceiver"
             android:exported="true"/>
