@@ -21,26 +21,44 @@ public class GeofenceBroadcastReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-
         GeofencingEvent geofencingEvent = GeofencingEvent.fromIntent(intent);
-        if (geofencingEvent.hasError()) return;
+        if (geofencingEvent == null || geofencingEvent.hasError()) return;
 
         int transition = geofencingEvent.getGeofenceTransition();
 
         if (transition == Geofence.GEOFENCE_TRANSITION_ENTER) {
             List<Geofence> triggeringGeofences = geofencingEvent.getTriggeringGeofences();
-            for (Geofence geofence : triggeringGeofences) {
-                sendNotification(context, "You are near: " + geofence.getRequestId());
+            if (triggeringGeofences != null && !triggeringGeofences.isEmpty()) {
+                // Get the first geofence that triggered the event
+                Geofence geofence = triggeringGeofences.get(0);
+                String name = geofence.getRequestId();
+                
+                // We need to fetch the coordinates from DB to provide directions
+                new Thread(() -> {
+                    LocationEntity entity = null;
+                    List<LocationEntity> list = AppDatabase.getInstance(context).locationDao().getAllLocations();
+                    for (LocationEntity loc : list) {
+                        if (loc.getName().equals(name)) {
+                            entity = loc;
+                            break;
+                        }
+                    }
+                    
+                    if (entity != null) {
+                        sendNotification(context, "You are near: " + name, entity);
+                    } else {
+                        // Fallback if entity not found (shouldn't happen)
+                        sendNotification(context, "You are near: " + name, null);
+                    }
+                }).start();
             }
         }
     }
 
-    private void sendNotification(Context context, String message) {
-
+    private void sendNotification(Context context, String message, LocationEntity entity) {
         NotificationManager notificationManager =
                 (NotificationManager) context.getSystemService(Context.NOTIFICATION_SERVICE);
 
-        // Create notification channel for Android 8+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                     CHANNEL_ID,
@@ -50,21 +68,29 @@ public class GeofenceBroadcastReceiver extends BroadcastReceiver {
             notificationManager.createNotificationChannel(channel);
         }
 
-        // Intent to open MapsActivity when the notification is clicked
         Intent intent = new Intent(context, MapsActivity.class);
+        if (entity != null) {
+            intent.putExtra("navigateLat", entity.getLatitude());
+            intent.putExtra("navigateLng", entity.getLongitude());
+            intent.putExtra("autoRoute", true);
+        }
+        
+        // Use a unique requestCode so intents don't overwrite each other if multiple geofences trigger
+        int requestCode = (entity != null) ? entity.getId() : 0;
+
         PendingIntent pendingIntent = PendingIntent.getActivity(
-                context, 0, intent,
+                context, requestCode, intent,
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE
         );
 
         NotificationCompat.Builder builder = new NotificationCompat.Builder(context, CHANNEL_ID)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(android.R.drawable.ic_dialog_map)
                 .setContentTitle("GeoTracker Alert")
                 .setContentText(message)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)
                 .setContentIntent(pendingIntent)
                 .setAutoCancel(true);
 
-        notificationManager.notify((int) System.currentTimeMillis(), builder.build());
+        notificationManager.notify(requestCode, builder.build());
     }
 }

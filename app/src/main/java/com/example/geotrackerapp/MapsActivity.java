@@ -3,9 +3,13 @@ package com.example.geotrackerapp;
 import android.app.PendingIntent;
 import android.content.Intent;
 import android.content.pm.PackageManager;
+import android.location.Address;
+import android.location.Geocoder;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.text.Editable;
+import android.text.TextWatcher;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.Toast;
@@ -27,8 +31,10 @@ import com.google.android.gms.maps.model.CircleOptions;
 import com.google.android.gms.maps.model.LatLng;
 import com.google.android.gms.maps.model.MarkerOptions;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 
 public class MapsActivity extends FragmentActivity implements OnMapReadyCallback {
 
@@ -37,10 +43,9 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
     private GeofencingClient geofencingClient;
 
     private static final int LOCATION_PERMISSION_REQUEST_CODE = 1000;
-    private static final float GEOFENCE_RADIUS = 200; // 200 meters as requested
+    private static final float GEOFENCE_RADIUS = 200;
 
-    public static final List<LatLng> savedLocations = new ArrayList<>();
-    public static final List<String> savedLocationNames = new ArrayList<>();
+    private EditText nameInput, latInput, lngInput;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -50,25 +55,37 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         fusedLocationClient = LocationServices.getFusedLocationProviderClient(this);
         geofencingClient = LocationServices.getGeofencingClient(this);
 
-        SupportMapFragment mapFragment =
-                (SupportMapFragment) getSupportFragmentManager().findFragmentById(R.id.map);
+        nameInput = findViewById(R.id.locationNameInput);
+        latInput = findViewById(R.id.locationLatInput);
+        lngInput = findViewById(R.id.locationLngInput);
+        Button addBtn = findViewById(R.id.addLocationBtn);
+        Button viewSavedBtn = findViewById(R.id.btnViewSaved);
+
+        SupportMapFragment mapFragment = (SupportMapFragment) getSupportFragmentManager().findFragmentById(R.id.map);
         if (mapFragment != null) {
             mapFragment.getMapAsync(this);
         }
 
         checkAndRequestPermissions();
+        setCurrentLocationAsDefault();
 
-        EditText nameInput = findViewById(R.id.locationNameInput);
-        EditText latInput = findViewById(R.id.locationLatInput);
-        EditText lngInput = findViewById(R.id.locationLngInput);
-        Button addBtn = findViewById(R.id.addLocationBtn);
-        Button viewSavedBtn = findViewById(R.id.btnViewSaved);
+        // UX: Auto-generate coordinates from name (Geocoding)
+        nameInput.addTextChangedListener(new TextWatcher() {
+            @Override
+            public void beforeTextChanged(CharSequence s, int start, int count, int after) {}
+            @Override
+            public void onTextChanged(CharSequence s, int start, int before, int count) {}
+            @Override
+            public void afterTextChanged(Editable s) {
+                if (s.length() > 3) { // Trigger search after 3 characters
+                    lookupAddress(s.toString());
+                }
+            }
+        });
 
         viewSavedBtn.setOnClickListener(v ->
                 startActivity(new Intent(MapsActivity.this, SavedLocationsActivity.class))
         );
-
-        loadSavedLocationsFromDatabase();
 
         addBtn.setOnClickListener(v -> {
             String name = nameInput.getText().toString();
@@ -80,67 +97,73 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                 return;
             }
 
-            double lat, lng;
             try {
-                lat = Double.parseDouble(latStr);
-                lng = Double.parseDouble(lngStr);
+                double lat = Double.parseDouble(latStr);
+                double lng = Double.parseDouble(lngStr);
+                saveNewLocation(name, lat, lng);
+                nameInput.setText("");
+                setCurrentLocationAsDefault(); // Reset to current location after add
             } catch (NumberFormatException e) {
                 Toast.makeText(this, "Invalid coordinates", Toast.LENGTH_SHORT).show();
-                return;
             }
-
-            saveNewLocation(name, lat, lng);
-            nameInput.setText("");
-            latInput.setText("");
-            lngInput.setText("");
         });
+
+        loadSavedLocationsFromDatabase();
+    }
+
+    private void setCurrentLocationAsDefault() {
+        if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
+            fusedLocationClient.getLastLocation().addOnSuccessListener(location -> {
+                if (location != null) {
+                    latInput.setText(String.valueOf(location.getLatitude()));
+                    lngInput.setText(String.valueOf(location.getLongitude()));
+                }
+            });
+        }
+    }
+
+    private void lookupAddress(String locationName) {
+        Geocoder geocoder = new Geocoder(this, Locale.getDefault());
+        new Thread(() -> {
+            try {
+                List<Address> addresses = geocoder.getFromLocationName(locationName, 1);
+                if (addresses != null && !addresses.isEmpty()) {
+                    Address address = addresses.get(0);
+                    runOnUiThread(() -> {
+                        // Only update if the user isn't currently typing in the lat/lng fields
+                        if (!latInput.hasFocus() && !lngInput.hasFocus()) {
+                            latInput.setText(String.valueOf(address.getLatitude()));
+                            lngInput.setText(String.valueOf(address.getLongitude()));
+                        }
+                    });
+                }
+            } catch (IOException e) {
+                e.printStackTrace();
+            }
+        }).start();
     }
 
     private void saveNewLocation(String name, double lat, double lng) {
-        LatLng newLocation = new LatLng(lat, lng);
-        savedLocations.add(newLocation);
-        savedLocationNames.add(name);
-
-        saveLocationToDatabase(name, lat, lng);
-        
-        if (mMap != null) {
-            addMarkerAndCircle(newLocation, name);
-        }
-
-        addGeofence(newLocation, name);
-        Toast.makeText(this, "Location added: " + name, Toast.LENGTH_SHORT).show();
+        new Thread(() -> {
+            LocationEntity location = new LocationEntity(name, lat, lng);
+            AppDatabase.getInstance(this).locationDao().insert(location);
+            runOnUiThread(() -> {
+                LatLng latLng = new LatLng(lat, lng);
+                addMarkerAndCircle(latLng, name);
+                addGeofence(latLng, name);
+                Toast.makeText(this, "Location saved: " + name, Toast.LENGTH_SHORT).show();
+            });
+        }).start();
     }
 
     private void addMarkerAndCircle(LatLng latLng, String title) {
-        mMap.addMarker(new MarkerOptions().position(latLng).title(title));
-        mMap.addCircle(new CircleOptions()
-                .center(latLng)
-                .radius(GEOFENCE_RADIUS)
-                .strokeColor(0x5500FF00)
-                .fillColor(0x2200FF00));
-    }
-
-    private void checkAndRequestPermissions() {
-        List<String> permissionsNeeded = new ArrayList<>();
-        if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            permissionsNeeded.add(android.Manifest.permission.ACCESS_FINE_LOCATION);
-        }
-        if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            permissionsNeeded.add(android.Manifest.permission.ACCESS_COARSE_LOCATION);
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_BACKGROUND_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                permissionsNeeded.add(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION);
-            }
-        }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
-                permissionsNeeded.add(android.Manifest.permission.POST_NOTIFICATIONS);
-            }
-        }
-
-        if (!permissionsNeeded.isEmpty()) {
-            ActivityCompat.requestPermissions(this, permissionsNeeded.toArray(new String[0]), LOCATION_PERMISSION_REQUEST_CODE);
+        if (mMap != null) {
+            mMap.addMarker(new MarkerOptions().position(latLng).title(title));
+            mMap.addCircle(new CircleOptions()
+                    .center(latLng)
+                    .radius(GEOFENCE_RADIUS)
+                    .strokeColor(0x5500FF00)
+                    .fillColor(0x2200FF00));
         }
     }
 
@@ -158,63 +181,65 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
                 .build();
 
         PendingIntent pendingIntent = PendingIntent.getBroadcast(
-                this, 0, new Intent(this, GeofenceBroadcastReceiver.class),
+                this, id.hashCode(), new Intent(this, GeofenceBroadcastReceiver.class),
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE
         );
 
         if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
-            geofencingClient.addGeofences(request, pendingIntent)
-                    .addOnFailureListener(e -> Toast.makeText(this, "Geofence failed", Toast.LENGTH_SHORT).show());
+            geofencingClient.addGeofences(request, pendingIntent);
         }
     }
 
     private void loadSavedLocationsFromDatabase() {
         new Thread(() -> {
-            List<LocationEntity> allLocations = AppDatabase.getInstance(this).locationDao().getAllLocations();
-            savedLocations.clear();
-            savedLocationNames.clear();
-
-            for (LocationEntity loc : allLocations) {
-                LatLng latLng = new LatLng(loc.getLatitude(), loc.getLongitude());
-                savedLocations.add(latLng);
-                savedLocationNames.add(loc.getName());
-
-                runOnUiThread(() -> {
-                    if (mMap != null) {
-                        addMarkerAndCircle(latLng, loc.getName());
-                    }
+            List<LocationEntity> all = AppDatabase.getInstance(this).locationDao().getAllLocations();
+            runOnUiThread(() -> {
+                for (LocationEntity loc : all) {
+                    LatLng latLng = new LatLng(loc.getLatitude(), loc.getLongitude());
+                    addMarkerAndCircle(latLng, loc.getName());
                     addGeofence(latLng, loc.getName());
-                });
-            }
+                }
+            });
         }).start();
     }
 
-    private void saveLocationToDatabase(String name, double lat, double lng) {
-        new Thread(() -> {
-            LocationEntity location = new LocationEntity(name, lat, lng);
-            AppDatabase.getInstance(this).locationDao().insert(location);
-        }).start();
+    private void checkAndRequestPermissions() {
+        List<String> permissions = new ArrayList<>();
+        permissions.add(android.Manifest.permission.ACCESS_FINE_LOCATION);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            permissions.add(android.Manifest.permission.ACCESS_BACKGROUND_LOCATION);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            permissions.add(android.Manifest.permission.POST_NOTIFICATIONS);
+        }
+        ActivityCompat.requestPermissions(this, permissions.toArray(new String[0]), LOCATION_PERMISSION_REQUEST_CODE);
     }
 
     @Override
     public void onMapReady(GoogleMap googleMap) {
         mMap = googleMap;
-
         if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED) {
             mMap.setMyLocationEnabled(true);
-            fusedLocationClient.getLastLocation().addOnSuccessListener(this, location -> {
-                if (location != null) {
-                    LatLng current = new LatLng(location.getLatitude(), location.getLongitude());
-                    mMap.moveCamera(CameraUpdateFactory.newLatLngZoom(current, 15));
-                }
-            });
         }
 
-        mMap.setOnMapLongClickListener(latLng -> saveNewLocation("Pinned Location", latLng.latitude, latLng.longitude));
+        mMap.setOnMapLongClickListener(latLng -> {
+            latInput.setText(String.valueOf(latLng.latitude));
+            lngInput.setText(String.valueOf(latLng.longitude));
+            nameInput.requestFocus();
+            Toast.makeText(this, "Coordinates updated from map", Toast.LENGTH_SHORT).show();
+        });
 
-        // Handle navigation from SavedLocationsActivity
-        Intent intent = getIntent();
-        if (intent.hasExtra("navigateLat") && intent.hasExtra("navigateLng")) {
+        handleIntent(getIntent());
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        handleIntent(intent);
+    }
+
+    private void handleIntent(Intent intent) {
+        if (intent != null && intent.hasExtra("navigateLat")) {
             double lat = intent.getDoubleExtra("navigateLat", 0);
             double lng = intent.getDoubleExtra("navigateLng", 0);
             openGoogleMapsDirections(lat, lng);
@@ -228,18 +253,7 @@ public class MapsActivity extends FragmentActivity implements OnMapReadyCallback
         if (mapIntent.resolveActivity(getPackageManager()) != null) {
             startActivity(mapIntent);
         } else {
-            // Fallback to browser or just show on internal map
-            LatLng nav = new LatLng(lat, lng);
-            mMap.animateCamera(CameraUpdateFactory.newLatLngZoom(nav, 18));
-            Toast.makeText(this, "Opening directions...", Toast.LENGTH_SHORT).show();
-        }
-    }
-
-    @Override
-    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
-        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
-        if (mMap != null && requestCode == LOCATION_PERMISSION_REQUEST_CODE) {
-            onMapReady(mMap);
+            mMap.animateCamera(CameraUpdateFactory.newLatLngZoom(new LatLng(lat, lng), 18));
         }
     }
 }

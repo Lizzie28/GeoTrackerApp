@@ -55,14 +55,6 @@ public class SavedLocationsActivity extends AppCompatActivity {
                 locationList.clear();
                 locationList.addAll(dbLocations);
                 adapter.notifyDataSetChanged();
-                
-                // Keep MapsActivity static lists in sync if needed
-                MapsActivity.savedLocationNames.clear();
-                MapsActivity.savedLocations.clear();
-                for (LocationEntity loc : dbLocations) {
-                    MapsActivity.savedLocationNames.add(loc.getName());
-                    MapsActivity.savedLocations.add(new LatLng(loc.getLatitude(), loc.getLongitude()));
-                }
             });
         }).start();
     }
